@@ -423,22 +423,99 @@ class SystemAutomation:
             
         elif action == "image_gen":
             prompt = command.get('prompt', '')
-            # We use a simplified version of the generate_image_api here
-            # For the full Gradio experience, we'll keep the Gradio version in ai_chat.py
-            # but this allows voice/terminal to also generate images.
-            import requests, urllib.parse, io
+            import requests, io, random
             from PIL import Image
-            encoded_prompt = urllib.parse.quote(prompt)
-            url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=512&height=512"
+            server_url = os.getenv("COMFYUI_URL", "http://127.0.0.1:8188")
+            workflow = {
+                "3": {
+                    "class_type": "KSampler",
+                    "inputs": {
+                        "seed": random.randint(1, 999999),
+                        "steps": 20,
+                        "cfg": 7.5,
+                        "sampler_name": "euler",
+                        "scheduler": "normal",
+                        "denoise": 1,
+                        "model": ["4", 0],
+                        "positive": ["6", 0],
+                        "negative": ["7", 0],
+                        "latent_image": ["5", 0]
+                    }
+                },
+                "4": {
+                    "class_type": "CheckpointLoaderSimple",
+                    "inputs": {"ckpt_name": "v1-5-pruned-emaonly.safetensors"}
+                },
+                "5": {
+                    "class_type": "EmptyLatentImage",
+                    "inputs": {"width": 512, "height": 512, "batch_size": 1}
+                },
+                "6": {
+                    "class_type": "CLIPTextEncode",
+                    "inputs": {"text": prompt, "clip": ["4", 1]}
+                },
+                "7": {
+                    "class_type": "CLIPTextEncode",
+                    "inputs": {"text": "blurry, bad quality, distorted, ugly", "clip": ["4", 1]}
+                },
+                "8": {
+                    "class_type": "VAEDecode",
+                    "inputs": {"samples": ["3", 0], "vae": ["4", 2]}
+                },
+                "9": {
+                    "class_type": "SaveImage",
+                    "inputs": {"filename_prefix": "AI_Gen", "images": ["8", 0]}
+                }
+            }
             try:
-                response = requests.get(url, timeout=30)
-                if response.status_code == 200:
-                    img = Image.open(io.BytesIO(response.content))
-                    save_path = os.path.expanduser(f"~/ai_files/image_{int(time.time())}.png")
-                    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-                    img.save(save_path)
-                    return f"✅ Image generated and saved to: {save_path}, sir."
-                return "I encountered an error with the image generation service, sir."
+                health = requests.get(f"{server_url}/system_stats", timeout=3)
+                if health.status_code != 200:
+                    return "ComfyUI is not running locally, sir. Start ComfyUI and try again."
+
+                queued = requests.post(f"{server_url}/prompt", json={"prompt": workflow}, timeout=15)
+                if queued.status_code != 200:
+                    return f"ComfyUI queue failed (HTTP {queued.status_code}), sir."
+                prompt_id = queued.json().get("prompt_id")
+                if not prompt_id:
+                    return "ComfyUI did not return a prompt id, sir."
+
+                image_meta = None
+                deadline = time.time() + 120
+                while time.time() < deadline:
+                    hist = requests.get(f"{server_url}/history/{prompt_id}", timeout=10)
+                    if hist.status_code == 200:
+                        data = hist.json().get(prompt_id, {})
+                        outputs = data.get("outputs", {})
+                        for node in outputs.values():
+                            for img in node.get("images", []):
+                                image_meta = img
+                                break
+                            if image_meta:
+                                break
+                    if image_meta:
+                        break
+                    time.sleep(1)
+
+                if not image_meta:
+                    return "Timed out waiting for ComfyUI output, sir."
+
+                response = requests.get(
+                    f"{server_url}/view",
+                    params={
+                        "filename": image_meta.get("filename", ""),
+                        "subfolder": image_meta.get("subfolder", ""),
+                        "type": image_meta.get("type", "output"),
+                    },
+                    timeout=30,
+                )
+                if response.status_code != 200:
+                    return f"Failed to fetch ComfyUI image (HTTP {response.status_code}), sir."
+
+                img = Image.open(io.BytesIO(response.content))
+                save_path = os.path.expanduser(f"~/ai_files/image_{int(time.time())}.png")
+                os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                img.save(save_path)
+                return f"✅ Image generated locally with ComfyUI and saved to: {save_path}, sir."
             except Exception as e: return f"Error generating image: {e}"
 
         elif action == "web_search":
