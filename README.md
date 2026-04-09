@@ -275,7 +275,5 @@ If both fail, video likely has unavailable captions in your region/session.
 
 ## License
 
-No license file is currently included.
-Add one if you plan to accept external contributions.
-
-[README.md](https://github.com/user-attachments/files/26608801/README.md)
+This project is licensed under the MIT License.
+See the `LICENSE` file for details.
